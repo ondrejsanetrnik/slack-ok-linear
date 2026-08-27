@@ -101,6 +101,85 @@ export function parseInteractivePayload(raw: unknown): Record<string, unknown> |
   return null;
 }
 
+export function extractSlackMessageText(message: Record<string, unknown>): string {
+  const direct = String(message.text ?? '').trim();
+  if (direct) {
+    return direct;
+  }
+
+  const chunks: string[] = [];
+
+  const attachments = Array.isArray(message.attachments) ? message.attachments : [];
+  for (const raw of attachments) {
+    const att = asRecord(raw);
+    for (const key of ['pretext', 'title', 'text', 'fallback'] as const) {
+      const value = String(att[key] ?? '').trim();
+      if (value) {
+        chunks.push(value);
+      }
+    }
+    const fields = Array.isArray(att.fields) ? att.fields : [];
+    for (const fieldRaw of fields) {
+      const field = asRecord(fieldRaw);
+      const title = String(field.title ?? '').trim();
+      const value = String(field.value ?? '').trim();
+      if (title || value) {
+        chunks.push([title, value].filter(Boolean).join(': '));
+      }
+    }
+  }
+
+  const blocks = Array.isArray(message.blocks) ? message.blocks : [];
+  for (const raw of blocks) {
+    collectBlockText(asRecord(raw), chunks);
+  }
+
+  return chunks.join('\n').trim();
+}
+
+function collectBlockText(block: Record<string, unknown>, chunks: string[]): void {
+  const type = String(block.type ?? '');
+  if (type === 'section' || type === 'header' || type === 'context') {
+    pushTextObject(block.text, chunks);
+    const fields = Array.isArray(block.fields) ? block.fields : [];
+    for (const field of fields) {
+      pushTextObject(field, chunks);
+    }
+    const elements = Array.isArray(block.elements) ? block.elements : [];
+    for (const el of elements) {
+      pushTextObject(el, chunks);
+    }
+  }
+  if (type === 'rich_text') {
+    const elements = Array.isArray(block.elements) ? block.elements : [];
+    for (const el of elements) {
+      collectBlockText(asRecord(el), chunks);
+    }
+  }
+  if (type === 'rich_text_section' || type === 'rich_text_preformatted' || type === 'rich_text_quote') {
+    const elements = Array.isArray(block.elements) ? block.elements : [];
+    const parts: string[] = [];
+    for (const elRaw of elements) {
+      const el = asRecord(elRaw);
+      if (String(el.type ?? '') === 'text') {
+        parts.push(String(el.text ?? ''));
+      }
+    }
+    const joined = parts.join('').trim();
+    if (joined) {
+      chunks.push(joined);
+    }
+  }
+}
+
+function pushTextObject(value: unknown, chunks: string[]): void {
+  const obj = asRecord(value);
+  const text = String(obj.text ?? '').trim();
+  if (text) {
+    chunks.push(text);
+  }
+}
+
 export function parseMessageAction(payload: Record<string, unknown>): SlackMessageActionPayload | null {
   if (String(payload.type ?? '') !== 'message_action') {
     return null;
@@ -110,7 +189,7 @@ export function parseMessageAction(payload: Record<string, unknown>): SlackMessa
   const channel = asRecord(payload.channel);
   const message = asRecord(payload.message);
 
-  const messageText = String(message.text ?? '').trim();
+  const messageText = extractSlackMessageText(message);
   const responseUrl = String(payload.response_url ?? '');
   if (!messageText || !responseUrl) {
     return null;

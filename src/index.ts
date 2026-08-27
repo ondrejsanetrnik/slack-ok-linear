@@ -165,6 +165,10 @@ function runJob(config: AppConfig, job: OkJob): void {
 async function handleInteractivity(config: AppConfig, req: Request, res: Response): Promise<void> {
   const rawBody = (req as RawBodyRequest).rawBody;
   if (!rawBody || !verifySlackSignature(config.slackSigningSecret, req, rawBody)) {
+    console.warn('interactions: invalid signature', {
+      hasRawBody: Boolean(rawBody),
+      contentType: req.headers['content-type'],
+    });
     res.status(401).send('invalid signature');
     return;
   }
@@ -172,6 +176,7 @@ async function handleInteractivity(config: AppConfig, req: Request, res: Respons
   const body = req.body as Record<string, unknown>;
   const payload = parseInteractivePayload(body.payload ?? body);
   if (!payload) {
+    console.warn('interactions: invalid payload envelope');
     res.status(400).send('invalid payload');
     return;
   }
@@ -181,9 +186,26 @@ async function handleInteractivity(config: AppConfig, req: Request, res: Respons
     return;
   }
 
+  console.info('interactions:', {
+    type: payload.type,
+    callback_id: payload.callback_id,
+  });
+
   const action = parseMessageAction(payload);
   if (!action) {
-    res.status(200).send('');
+    console.warn('interactions: unsupported or empty message_action', {
+      type: payload.type,
+      callback_id: payload.callback_id,
+      hasMessage: Boolean(payload.message),
+    });
+    res.status(200).send();
+    const responseUrl = String(payload.response_url ?? '');
+    if (responseUrl) {
+      void postResponseUrl(responseUrl, {
+        response_type: 'ephemeral',
+        text: 'Z této zprávy nešlo vytáhnout text. Zkus jinou zprávu nebo reakci :ticket:.',
+      }).catch((error) => console.error(error));
+    }
     return;
   }
 
@@ -318,6 +340,17 @@ function main(): void {
   });
 
   app.get('/health', (_req, res) => {
+    res.type('text/plain').send('ok');
+  });
+
+  // Slack / browsers sometimes probe Request URLs with GET.
+  app.get('/slack/interactions', (_req, res) => {
+    res.type('text/plain').send('ok');
+  });
+  app.get('/slack/events', (_req, res) => {
+    res.type('text/plain').send('ok');
+  });
+  app.get('/slack/commands/ok', (_req, res) => {
     res.type('text/plain').send('ok');
   });
 
