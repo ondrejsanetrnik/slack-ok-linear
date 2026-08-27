@@ -46,6 +46,21 @@ export type SlackSlashPayload = {
   team_id: string;
 };
 
+export type SlackMessageActionPayload = {
+  callbackId: string;
+  responseUrl: string;
+  triggerId: string;
+  userId: string;
+  userName: string;
+  channelId: string;
+  channelName: string;
+  messageText: string;
+  messageTs: string;
+  threadTs: string | undefined;
+  messageUserId: string | undefined;
+  permalinkHint: string | undefined;
+};
+
 export function parseSlashPayload(body: Record<string, unknown>): SlackSlashPayload {
   return {
     command: String(body.command ?? ''),
@@ -60,9 +75,63 @@ export function parseSlashPayload(body: Record<string, unknown>): SlackSlashPayl
   };
 }
 
+function asRecord(value: unknown): Record<string, unknown> {
+  return typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : {};
+}
+
+export function parseInteractivePayload(raw: unknown): Record<string, unknown> | null {
+  if (typeof raw === 'string') {
+    try {
+      return asRecord(JSON.parse(raw));
+    } catch {
+      return null;
+    }
+  }
+  if (typeof raw === 'object' && raw !== null) {
+    return asRecord(raw);
+  }
+  return null;
+}
+
+export function parseMessageAction(payload: Record<string, unknown>): SlackMessageActionPayload | null {
+  if (String(payload.type ?? '') !== 'message_action') {
+    return null;
+  }
+
+  const user = asRecord(payload.user);
+  const channel = asRecord(payload.channel);
+  const message = asRecord(payload.message);
+
+  const messageText = String(message.text ?? '').trim();
+  const responseUrl = String(payload.response_url ?? '');
+  if (!messageText || !responseUrl) {
+    return null;
+  }
+
+  return {
+    callbackId: String(payload.callback_id ?? ''),
+    responseUrl,
+    triggerId: String(payload.trigger_id ?? ''),
+    userId: String(user.id ?? ''),
+    userName: String(user.username ?? user.name ?? ''),
+    channelId: String(channel.id ?? ''),
+    channelName: String(channel.name ?? ''),
+    messageText,
+    messageTs: String(message.ts ?? ''),
+    threadTs: message.thread_ts ? String(message.thread_ts) : undefined,
+    messageUserId: message.user ? String(message.user) : undefined,
+    permalinkHint: undefined,
+  };
+}
+
 export async function postResponseUrl(
   responseUrl: string,
-  message: { text: string; response_type?: 'ephemeral' | 'in_channel'; replace_original?: boolean },
+  message: {
+    text: string;
+    response_type?: 'ephemeral' | 'in_channel';
+    replace_original?: boolean;
+    thread_ts?: string;
+  },
 ): Promise<void> {
   const response = await fetch(responseUrl, {
     method: 'POST',
@@ -73,4 +142,23 @@ export async function postResponseUrl(
     const text = await response.text();
     throw new Error(`Slack response_url failed: ${response.status} ${text}`);
   }
+}
+
+export function buildThreadTaskText(action: SlackMessageActionPayload, extraNotes?: string): string {
+  const parts = [
+    '## Zpráva ze Slack threadu',
+    action.messageText,
+    '',
+    `Kanál: #${action.channelName || action.channelId}`,
+    action.threadTs ? `Thread ts: ${action.threadTs}` : null,
+    action.messageTs ? `Message ts: ${action.messageTs}` : null,
+    action.messageUserId ? `Autor zprávy: <@${action.messageUserId}>` : null,
+  ].filter((line) => line !== null);
+
+  const notes = (extraNotes ?? '').trim();
+  if (notes) {
+    parts.push('', '## Poznámky od Ondry', notes);
+  }
+
+  return parts.join('\n');
 }

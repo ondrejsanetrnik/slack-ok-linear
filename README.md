@@ -1,14 +1,18 @@
 # slack-ok-linear
 
-Slack slash command **`/ok`** → AI (OpenRouter or Anthropic) → Linear issue in **Gramo IT**.
+Slack **message shortcut** (works in threads) → AI → Linear issue in **Gramo IT**.
 
-## Flow
+Slash `/ok` still works in channels, but **not in threads** (Slack limitation).
 
-1. In Slack: `/ok Co chci: … / Jak přistoupím: … / Poznámky: …`
-2. Service acks immediately (Slack 3s limit)
-3. LLM fills title, description, priority, estimate (0–6 h), project
-4. Linear issue: assignee **Ondra**, state **Todo**, **current cycle**, team **Gramo IT**
-5. Ephemeral reply with issue link
+## Thread flow (recommended)
+
+1. In a thread, open ⋮ on the message (error / your notes)
+2. **OK → Linear**
+3. Agent creates the issue; you get an ephemeral link
+
+## Channel flow
+
+`/ok Co chci: … / Jak přistoupím: … / Poznámky: …`
 
 ## Env
 
@@ -22,7 +26,7 @@ Slack slash command **`/ok`** → AI (OpenRouter or Anthropic) → Linear issue 
 | `LLM_PROVIDER` | no | `auto` (default), `openrouter`, `anthropic` |
 | `OPENROUTER_MODEL` | no | default `openai/gpt-5-mini` |
 | `ANTHROPIC_MODEL` | no | default `claude-sonnet-4-5` |
-| `SLACK_BOT_TOKEN` | no | reserved for future thread replies |
+| `SLACK_BOT_TOKEN` | no | reserved |
 | `LINEAR_TEAM_ID` | no | defaults to Gramo IT |
 | `LINEAR_ASSIGNEE_ID` | no | defaults to Ondra |
 | `LINEAR_STATE_NAME` | no | default `Todo` |
@@ -32,18 +36,19 @@ Slack slash command **`/ok`** → AI (OpenRouter or Anthropic) → Linear issue 
 
 - `GET /health` — healthcheck
 - `GET /llm-status` — probe OpenRouter + Anthropic
-- `POST /slack/commands/ok` — Slack slash Request URL
+- `POST /slack/commands/ok` — Slash Command Request URL
+- `POST /slack/interactions` — Interactivity & Shortcuts Request URL
 
-## Slack app setup
+## Slack app setup (threads)
 
-1. [api.slack.com/apps](https://api.slack.com/apps) → Create New App → From scratch
-2. **Slash Commands** → Create New Command
-   - Command: `/ok`
-   - Request URL: `https://YOUR-SERVICE.up.railway.app/slack/commands/ok`
-   - Short description: `Založí Linear issue přes AI`
-3. Copy **Signing Secret** → `SLACK_SIGNING_SECRET`
-4. Install app to the Gramodesky workspace
-5. Invite the app to channels where you use `/ok` (if Slack requires it)
+1. **Interactivity & Shortcuts** → ON  
+   Request URL: `https://YOUR-SERVICE.up.railway.app/slack/interactions`
+2. **Create New Shortcut** → **On messages**
+   - Name: `OK → Linear`
+   - Short description: `Založí Linear issue ze zprávy`
+   - Callback ID: `ok_linear`
+3. Reinstall app if Slack asks
+4. In a thread: ⋮ on a message → **OK → Linear**
 
 ## Local
 

@@ -4,12 +4,66 @@ import { analyzeTask, buildIssueDescription } from './analyze.js';
 import { loadConfig, type AppConfig } from './config.js';
 import { createIssue } from './linear.js';
 import { probeLlm } from './llm.js';
-import { parseSlashPayload, postResponseUrl, verifySlackSignature } from './slack.js';
+import {
+  buildThreadTaskText,
+  parseInteractivePayload,
+  parseMessageAction,
+  parseSlashPayload,
+  postResponseUrl,
+  verifySlackSignature,
+  type SlackMessageActionPayload,
+  type SlackSlashPayload,
+} from './slack.js';
 
 type RawBodyRequest = Request & { rawBody?: Buffer };
 
 function readRawBody(req: Request, _res: Response, buf: Buffer): void {
   (req as RawBodyRequest).rawBody = buf;
+}
+
+type OkJob = {
+  text: string;
+  channelName: string;
+  userName: string;
+  userId: string;
+  responseUrl: string;
+};
+
+async function processOkJob(config: AppConfig, job: OkJob): Promise<void> {
+  const analysis = await analyzeTask(config, {
+    text: job.text,
+    channelName: job.channelName,
+    userName: job.userName,
+    userId: job.userId,
+  });
+
+  const issue = await createIssue(config.linearApiKey, {
+    teamId: config.teamId,
+    title: analysis.title,
+    description: buildIssueDescription(analysis, {
+      text: job.text,
+      channelName: job.channelName,
+      userName: job.userName,
+      userId: job.userId,
+    }),
+    assigneeId: config.assigneeId,
+    stateName: config.stateName,
+    projectId: analysis.project_id,
+    priority: analysis.priority,
+    estimate: analysis.estimate_hours,
+    cycleId: null,
+  });
+
+  const lines = [
+    `Hotovo: *<${issue.url}|${issue.identifier}>* — ${issue.title}`,
+    `Priorita: ${analysis.priority} · Estimate: ${analysis.estimate_hours} h` +
+      (analysis.project_name ? ` · Projekt: ${analysis.project_name}` : ''),
+  ];
+
+  await postResponseUrl(job.responseUrl, {
+    response_type: 'ephemeral',
+    text: lines.join('\n'),
+  });
 }
 
 async function handleOkCommand(config: AppConfig, req: Request, res: Response): Promise<void> {
@@ -33,26 +87,48 @@ async function handleOkCommand(config: AppConfig, req: Request, res: Response): 
       response_type: 'ephemeral',
       text: [
         '*Použití*',
-        '`/ok Co chci: …`',
-        '`Jak k tomu přistoupím: …`',
-        '`Poznámky pro AI: …`',
+        'Ve *vlákně* Slack `/ok` nepodporuje.',
+        'Použij zkratku u zprávy: ⋮ → *OK → Linear*.',
         '',
-        'Celý text za `/ok` jde agentovi — založí Linear issue (Gramo IT → Ondra → Todo → aktuální cyklus).',
+        'V kanálu (mimo thread): `/ok Co chci: …`',
       ].join('\n'),
     });
     return;
   }
 
-  // Ack within Slack's 3s window; finish async via response_url.
   res.status(200).json({
     response_type: 'ephemeral',
     text: 'Zakládám Linear issue… (pár vteřin)',
   });
 
-  void processOkAsync(config, payload).catch(async (error) => {
-    console.error('/ok failed', error);
+  void runJob(config, fromSlash(payload));
+}
+
+function fromSlash(payload: SlackSlashPayload): OkJob {
+  return {
+    text: payload.text,
+    channelName: payload.channel_name,
+    userName: payload.user_name,
+    userId: payload.user_id,
+    responseUrl: payload.response_url,
+  };
+}
+
+function fromMessageAction(action: SlackMessageActionPayload): OkJob {
+  return {
+    text: buildThreadTaskText(action),
+    channelName: action.channelName,
+    userName: action.userName,
+    userId: action.userId,
+    responseUrl: action.responseUrl,
+  };
+}
+
+function runJob(config: AppConfig, job: OkJob): void {
+  void processOkJob(config, job).catch(async (error) => {
+    console.error('ok job failed', error);
     try {
-      await postResponseUrl(payload.response_url, {
+      await postResponseUrl(job.responseUrl, {
         response_type: 'ephemeral',
         text: `Nepovedlo se založit issue: ${error instanceof Error ? error.message : String(error)}`,
       });
@@ -62,44 +138,47 @@ async function handleOkCommand(config: AppConfig, req: Request, res: Response): 
   });
 }
 
-async function processOkAsync(
-  config: AppConfig,
-  payload: ReturnType<typeof parseSlashPayload>,
-): Promise<void> {
-  const analysis = await analyzeTask(config, {
-    text: payload.text,
-    channelName: payload.channel_name,
-    userName: payload.user_name,
-    userId: payload.user_id,
-  });
+async function handleInteractivity(config: AppConfig, req: Request, res: Response): Promise<void> {
+  const rawBody = (req as RawBodyRequest).rawBody;
+  if (!rawBody || !verifySlackSignature(config.slackSigningSecret, req, rawBody)) {
+    res.status(401).send('invalid signature');
+    return;
+  }
 
-  const issue = await createIssue(config.linearApiKey, {
-    teamId: config.teamId,
-    title: analysis.title,
-    description: buildIssueDescription(analysis, {
-      text: payload.text,
-      channelName: payload.channel_name,
-      userName: payload.user_name,
-      userId: payload.user_id,
-    }),
-    assigneeId: config.assigneeId,
-    stateName: config.stateName,
-    projectId: analysis.project_id,
-    priority: analysis.priority,
-    estimate: analysis.estimate_hours,
-    cycleId: null,
-  });
+  const body = req.body as Record<string, unknown>;
+  const payload = parseInteractivePayload(body.payload ?? body);
+  if (!payload) {
+    res.status(400).send('invalid payload');
+    return;
+  }
 
-  const lines = [
-    `Hotovo: *<${issue.url}|${issue.identifier}>* — ${issue.title}`,
-    `Priorita: ${analysis.priority} · Estimate: ${analysis.estimate_hours} h` +
-      (analysis.project_name ? ` · Projekt: ${analysis.project_name}` : ''),
-  ];
+  // Slack URL verification (rare on interactivity, but safe).
+  if (String(payload.type ?? '') === 'url_verification') {
+    res.status(200).json({ challenge: payload.challenge });
+    return;
+  }
 
-  await postResponseUrl(payload.response_url, {
-    response_type: 'ephemeral',
-    text: lines.join('\n'),
-  });
+  const action = parseMessageAction(payload);
+  if (!action) {
+    res.status(200).send('');
+    return;
+  }
+
+  // Accept any message shortcut on this app (callback_id set in Slack UI).
+  // Message actions must ACK with empty 200; follow up via response_url.
+  res.status(200).send();
+
+  void (async () => {
+    try {
+      await postResponseUrl(action.responseUrl, {
+        response_type: 'ephemeral',
+        text: 'Zakládám Linear issue ze zprávy ve vlákně…',
+      });
+    } catch (error) {
+      console.error('ack via response_url failed', error);
+    }
+    runJob(config, fromMessageAction(action));
+  })();
 }
 
 function main(): void {
@@ -146,6 +225,10 @@ function main(): void {
 
   app.post('/slack/commands/ok', (req, res) => {
     void handleOkCommand(config, req, res);
+  });
+
+  app.post('/slack/interactions', (req, res) => {
+    void handleInteractivity(config, req, res);
   });
 
   app.listen(config.port, () => {
