@@ -47,6 +47,7 @@ Do this on the **same** app that owns the Signing Secret + Bot Token.
    - `groups:history`
    - `chat:write`
    - `users:read`
+   - `files:read` (přílohy / screenshoty do Linear)
 2. **Event Subscriptions** → ON  
    Request URL: `https://slack-ok-linear-production.up.railway.app/slack/events`  
    Subscribe to bot events: `reaction_added`

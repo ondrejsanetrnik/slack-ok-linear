@@ -155,3 +155,121 @@ async function issueCreate(
 
   return data.issueCreate.issue;
 }
+
+export type LinearUploadInput = {
+  filename: string;
+  contentType: string;
+  body: Buffer;
+};
+
+export async function uploadFileToLinear(
+  apiKey: string,
+  file: LinearUploadInput,
+): Promise<{ assetUrl: string; filename: string; contentType: string }> {
+  const data = await linearGraphql<{
+    fileUpload: {
+      success: boolean;
+      uploadFile: {
+        uploadUrl: string;
+        assetUrl: string;
+        headers: Array<{ key: string; value: string }>;
+      } | null;
+    };
+  }>(
+    apiKey,
+    `mutation FileUpload($filename: String!, $contentType: String!, $size: Int!) {
+      fileUpload(filename: $filename, contentType: $contentType, size: $size) {
+        success
+        uploadFile {
+          uploadUrl
+          assetUrl
+          headers { key value }
+        }
+      }
+    }`,
+    {
+      filename: file.filename,
+      contentType: file.contentType,
+      size: file.body.byteLength,
+    },
+  );
+
+  if (!data.fileUpload.success || !data.fileUpload.uploadFile) {
+    throw new Error(`Linear fileUpload failed for ${file.filename}`);
+  }
+
+  const upload = data.fileUpload.uploadFile;
+  const headers = new Headers();
+  headers.set('Content-Type', file.contentType);
+  headers.set('Cache-Control', 'public, max-age=31536000');
+  for (const header of upload.headers) {
+    headers.set(header.key, header.value);
+  }
+
+  const put = await fetch(upload.uploadUrl, {
+    method: 'PUT',
+    headers,
+    body: file.body,
+  });
+  if (!put.ok) {
+    const text = await put.text();
+    throw new Error(
+      `Linear storage PUT failed for ${file.filename}: ${put.status} ${text}`,
+    );
+  }
+
+  return {
+    assetUrl: upload.assetUrl,
+    filename: file.filename,
+    contentType: file.contentType,
+  };
+}
+
+export async function attachUrlToIssue(
+  apiKey: string,
+  issueId: string,
+  url: string,
+  title: string,
+): Promise<void> {
+  const data = await linearGraphql<{
+    attachmentCreate: { success: boolean };
+  }>(
+    apiKey,
+    `mutation AttachmentCreate($input: AttachmentCreateInput!) {
+      attachmentCreate(input: $input) {
+        success
+      }
+    }`,
+    {
+      input: {
+        issueId,
+        url,
+        title,
+      },
+    },
+  );
+
+  if (!data.attachmentCreate.success) {
+    throw new Error(`Linear attachmentCreate failed for ${title}`);
+  }
+}
+
+export function appendAssetsToDescription(
+  description: string,
+  assets: Array<{ assetUrl: string; filename: string; contentType: string }>,
+): string {
+  if (assets.length === 0) {
+    return description;
+  }
+
+  const lines = ['', '## Přílohy ze Slacku'];
+  for (const asset of assets) {
+    if (asset.contentType.startsWith('image/')) {
+      lines.push(`![${asset.filename}](${asset.assetUrl})`);
+    } else {
+      lines.push(`- [${asset.filename}](${asset.assetUrl})`);
+    }
+  }
+
+  return `${description.trim()}\n${lines.join('\n')}`;
+}

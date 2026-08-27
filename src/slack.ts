@@ -47,6 +47,14 @@ export type SlackSlashPayload = {
   team_id: string;
 };
 
+export type SlackFileRef = {
+  id: string;
+  name: string;
+  mimetype: string;
+  size: number;
+  urlPrivateDownload: string;
+};
+
 export type SlackMessageActionPayload = {
   callbackId: string;
   responseUrl: string;
@@ -59,6 +67,7 @@ export type SlackMessageActionPayload = {
   messageTs: string;
   threadTs: string | undefined;
   messageUserId: string | undefined;
+  files: SlackFileRef[];
 };
 
 export type SlackReactionAddedEvent = {
@@ -137,6 +146,80 @@ export function extractSlackMessageText(message: Record<string, unknown>): strin
   return chunks.join('\n').trim();
 }
 
+const MAX_SLACK_FILE_BYTES = 50 * 1024 * 1024;
+
+export function extractSlackFiles(message: Record<string, unknown>): SlackFileRef[] {
+  const files = Array.isArray(message.files) ? message.files : [];
+  const out: SlackFileRef[] = [];
+
+  for (const raw of files) {
+    const file = asRecord(raw);
+    const mode = String(file.mode ?? '');
+    if (mode === 'tombstone' || mode === 'hidden_by_limit') {
+      continue;
+    }
+
+    const id = String(file.id ?? '');
+    const name = String(file.name ?? file.title ?? 'attachment').trim() || 'attachment';
+    const mimetype = String(file.mimetype ?? 'application/octet-stream').trim() || 'application/octet-stream';
+    const size = Number(file.size ?? 0);
+    const urlPrivateDownload = String(
+      file.url_private_download ?? file.url_private ?? '',
+    ).trim();
+
+    if (!id || !urlPrivateDownload) {
+      continue;
+    }
+    if (Number.isFinite(size) && size > MAX_SLACK_FILE_BYTES) {
+      console.warn(`Skipping Slack file ${name}: size ${size} exceeds limit`);
+      continue;
+    }
+
+    out.push({
+      id,
+      name,
+      mimetype,
+      size: Number.isFinite(size) && size > 0 ? size : 0,
+      urlPrivateDownload,
+    });
+  }
+
+  return out;
+}
+
+export async function downloadSlackFile(
+  botToken: string,
+  file: SlackFileRef,
+): Promise<{ buffer: Buffer; contentType: string; filename: string }> {
+  const response = await fetch(file.urlPrivateDownload, {
+    headers: { Authorization: `Bearer ${botToken}` },
+    redirect: 'follow',
+  });
+  if (!response.ok) {
+    throw new Error(
+      `Slack file download failed for ${file.name}: HTTP ${response.status}`,
+    );
+  }
+
+  const arrayBuffer = await response.arrayBuffer();
+  const buffer = Buffer.from(arrayBuffer);
+  if (buffer.byteLength === 0) {
+    throw new Error(`Slack file ${file.name} downloaded empty`);
+  }
+  if (buffer.byteLength > MAX_SLACK_FILE_BYTES) {
+    throw new Error(`Slack file ${file.name} too large after download`);
+  }
+
+  const contentType =
+    response.headers.get('content-type')?.split(';')[0]?.trim() || file.mimetype;
+
+  return {
+    buffer,
+    contentType,
+    filename: file.name,
+  };
+}
+
 function collectBlockText(block: Record<string, unknown>, chunks: string[]): void {
   const type = String(block.type ?? '');
   if (type === 'section' || type === 'header' || type === 'context') {
@@ -190,8 +273,10 @@ export function parseMessageAction(payload: Record<string, unknown>): SlackMessa
   const message = asRecord(payload.message);
 
   const messageText = extractSlackMessageText(message);
+  const files = extractSlackFiles(message);
   const responseUrl = String(payload.response_url ?? '');
-  if (!messageText || !responseUrl) {
+  // Allow image-only / file-only messages (no caption text).
+  if ((!messageText && files.length === 0) || !responseUrl) {
     return null;
   }
 
@@ -203,10 +288,11 @@ export function parseMessageAction(payload: Record<string, unknown>): SlackMessa
     userName: String(user.username ?? user.name ?? ''),
     channelId: String(channel.id ?? ''),
     channelName: String(channel.name ?? ''),
-    messageText,
+    messageText: messageText || '(zpráva jen s přílohou)',
     messageTs: String(message.ts ?? ''),
     threadTs: message.thread_ts ? String(message.thread_ts) : undefined,
     messageUserId: message.user ? String(message.user) : undefined,
+    files,
   };
 }
 
@@ -283,7 +369,12 @@ export async function fetchMessageText(
   botToken: string,
   channelId: string,
   messageTs: string,
-): Promise<{ text: string; threadTs: string | undefined; channelName: string | undefined }> {
+): Promise<{
+  text: string;
+  threadTs: string | undefined;
+  channelName: string | undefined;
+  files: SlackFileRef[];
+}> {
   const data = await slackApi<{
     messages?: Array<Record<string, unknown>>;
     channel?: Record<string, unknown>;
@@ -295,16 +386,18 @@ export async function fetchMessageText(
   });
 
   const message = data.messages?.[0] ?? {};
+  const files = extractSlackFiles(message);
   const text =
     extractSlackMessageText(message) || String(message.text ?? '').trim();
-  if (!text) {
+  if (!text && files.length === 0) {
     throw new Error('Nepodařilo se načíst text zprávy (bot možná nemá přístup do kanálu).');
   }
 
   return {
-    text,
+    text: text || '(zpráva jen s přílohou)',
     threadTs: message.thread_ts ? String(message.thread_ts) : undefined,
     channelName: undefined,
+    files,
   };
 }
 

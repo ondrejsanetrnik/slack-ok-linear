@@ -2,11 +2,17 @@ import express, { type Request, type Response } from 'express';
 
 import { analyzeTask, buildIssueDescription } from './analyze.js';
 import { loadConfig, type AppConfig } from './config.js';
-import { createIssue } from './linear.js';
+import {
+  appendAssetsToDescription,
+  attachUrlToIssue,
+  createIssue,
+  uploadFileToLinear,
+} from './linear.js';
 import { probeLlm } from './llm.js';
 import {
   addReaction,
   buildThreadTaskText,
+  downloadSlackFile,
   fetchMessageText,
   fetchUserName,
   parseInteractivePayload,
@@ -17,6 +23,7 @@ import {
   postResponseUrl,
   postThreadMessage,
   verifySlackSignature,
+  type SlackFileRef,
   type SlackMessageActionPayload,
   type SlackSlashPayload,
 } from './slack.js';
@@ -36,6 +43,7 @@ type OkJob = {
   responseUrl?: string;
   threadTs?: string;
   messageTs?: string;
+  files?: SlackFileRef[];
 };
 
 async function notifyProgress(config: AppConfig, job: OkJob, text: string): Promise<void> {
@@ -71,6 +79,35 @@ async function publishResult(config: AppConfig, job: OkJob, text: string): Promi
   await notifyProgress(config, job, text);
 }
 
+async function transferSlackFilesToLinear(
+  config: AppConfig,
+  files: SlackFileRef[],
+): Promise<Array<{ assetUrl: string; filename: string; contentType: string }>> {
+  if (files.length === 0) {
+    return [];
+  }
+  if (!config.slackBotToken) {
+    console.warn('Slack files present but SLACK_BOT_TOKEN missing — skipping attachments');
+    return [];
+  }
+
+  const assets: Array<{ assetUrl: string; filename: string; contentType: string }> = [];
+  for (const file of files) {
+    try {
+      const downloaded = await downloadSlackFile(config.slackBotToken, file);
+      const uploaded = await uploadFileToLinear(config.linearApiKey, {
+        filename: downloaded.filename,
+        contentType: downloaded.contentType,
+        body: downloaded.buffer,
+      });
+      assets.push(uploaded);
+    } catch (error) {
+      console.error(`Failed to transfer Slack file ${file.name}`, error);
+    }
+  }
+  return assets;
+}
+
 async function processOkJob(config: AppConfig, job: OkJob): Promise<void> {
   const analysis = await analyzeTask(config, {
     text: job.text,
@@ -79,15 +116,21 @@ async function processOkJob(config: AppConfig, job: OkJob): Promise<void> {
     userId: job.userId,
   });
 
-  const issue = await createIssue(config.linearApiKey, {
-    teamId: config.teamId,
-    title: analysis.title,
-    description: buildIssueDescription(analysis, {
+  const assets = await transferSlackFilesToLinear(config, job.files ?? []);
+  const description = appendAssetsToDescription(
+    buildIssueDescription(analysis, {
       text: job.text,
       channelName: job.channelName,
       userName: job.userName,
       userId: job.userId,
     }),
+    assets,
+  );
+
+  const issue = await createIssue(config.linearApiKey, {
+    teamId: config.teamId,
+    title: analysis.title,
+    description,
     assigneeId: config.assigneeId,
     stateName: config.stateName,
     projectId: analysis.project_id,
@@ -96,11 +139,26 @@ async function processOkJob(config: AppConfig, job: OkJob): Promise<void> {
     cycleId: null,
   });
 
+  for (const asset of assets) {
+    try {
+      await attachUrlToIssue(config.linearApiKey, issue.id, asset.assetUrl, asset.filename);
+    } catch (error) {
+      console.error(`Failed to attach ${asset.filename} to ${issue.identifier}`, error);
+    }
+  }
+
   const lines = [
     `Hotovo: *<${issue.url}|${issue.identifier}>* — ${issue.title}`,
     `Priorita: ${analysis.priority} · Estimate: ${analysis.estimate_hours} h` +
       (analysis.project_name ? ` · Projekt: ${analysis.project_name}` : ''),
   ];
+  if ((job.files?.length ?? 0) > 0) {
+    lines.push(
+      assets.length > 0
+        ? `Přílohy: ${assets.length}/${job.files!.length}`
+        : 'Přílohy: nepodařilo se přenést (zkontroluj scope `files:read`)',
+    );
+  }
 
   await publishResult(config, job, lines.join('\n'));
 }
@@ -164,6 +222,7 @@ function fromMessageAction(action: SlackMessageActionPayload): OkJob {
     responseUrl: action.responseUrl,
     threadTs: action.threadTs ?? action.messageTs,
     messageTs: action.messageTs,
+    files: action.files,
   };
 }
 
@@ -240,7 +299,35 @@ async function handleInteractivity(config: AppConfig, req: Request, res: Respons
     } catch (error) {
       console.error('ack via response_url failed', error);
     }
-    runJob(config, fromMessageAction(action));
+
+    const job = fromMessageAction(action);
+    // Prefer fresh file list from API when bot can read history (shortcut payload can omit urls).
+    if (config.slackBotToken && job.channelId && job.messageTs) {
+      try {
+        const fresh = await fetchMessageText(
+          config.slackBotToken,
+          job.channelId,
+          job.messageTs,
+        );
+        if (fresh.files.length > 0) {
+          job.files = fresh.files;
+        }
+        if (fresh.text && job.text.includes('(zpráva jen s přílohou)')) {
+          job.text = buildThreadTaskText({
+            messageText: fresh.text,
+            channelName: action.channelName,
+            channelId: action.channelId,
+            threadTs: action.threadTs,
+            messageTs: action.messageTs,
+            messageUserId: action.messageUserId,
+          });
+        }
+      } catch (error) {
+        console.warn('Could not refresh message for attachments', error);
+      }
+    }
+
+    runJob(config, job);
   })();
 }
 
@@ -308,6 +395,7 @@ async function handleEvents(config: AppConfig, req: Request, res: Response): Pro
         userId: reactionEvent.userId,
         threadTs: message.threadTs ?? reactionEvent.messageTs,
         messageTs: reactionEvent.messageTs,
+        files: message.files,
       };
 
       await notifyProgress(
