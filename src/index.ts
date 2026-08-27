@@ -5,6 +5,7 @@ import { loadConfig, type AppConfig } from './config.js';
 import { createIssue } from './linear.js';
 import { probeLlm } from './llm.js';
 import {
+  addReaction,
   buildThreadTaskText,
   fetchMessageText,
   fetchUserName,
@@ -14,6 +15,7 @@ import {
   parseSlashPayload,
   postEphemeral,
   postResponseUrl,
+  postThreadMessage,
   verifySlackSignature,
   type SlackMessageActionPayload,
   type SlackSlashPayload,
@@ -33,9 +35,10 @@ type OkJob = {
   userId: string;
   responseUrl?: string;
   threadTs?: string;
+  messageTs?: string;
 };
 
-async function notifyUser(config: AppConfig, job: OkJob, text: string): Promise<void> {
+async function notifyProgress(config: AppConfig, job: OkJob, text: string): Promise<void> {
   if (job.responseUrl) {
     await postResponseUrl(job.responseUrl, {
       response_type: 'ephemeral',
@@ -45,11 +48,27 @@ async function notifyUser(config: AppConfig, job: OkJob, text: string): Promise<
   }
 
   if (!config.slackBotToken || !job.channelId) {
-    console.warn('No response_url or bot token to notify user:', text);
     return;
   }
 
   await postEphemeral(config.slackBotToken, job.channelId, job.userId, text, job.threadTs);
+}
+
+async function publishResult(config: AppConfig, job: OkJob, text: string): Promise<void> {
+  const botToken = config.slackBotToken;
+  const channelId = job.channelId;
+  const threadTs = job.threadTs ?? job.messageTs;
+
+  if (botToken && channelId && threadTs) {
+    await postThreadMessage(botToken, channelId, text, threadTs);
+    if (job.messageTs) {
+      await addReaction(botToken, channelId, job.messageTs, 'eyes');
+    }
+    return;
+  }
+
+  // Fallback when bot cannot post publicly.
+  await notifyProgress(config, job, text);
 }
 
 async function processOkJob(config: AppConfig, job: OkJob): Promise<void> {
@@ -83,7 +102,7 @@ async function processOkJob(config: AppConfig, job: OkJob): Promise<void> {
       (analysis.project_name ? ` · Projekt: ${analysis.project_name}` : ''),
   ];
 
-  await notifyUser(config, job, lines.join('\n'));
+  await publishResult(config, job, lines.join('\n'));
 }
 
 async function handleOkCommand(config: AppConfig, req: Request, res: Response): Promise<void> {
@@ -144,6 +163,7 @@ function fromMessageAction(action: SlackMessageActionPayload): OkJob {
     userId: action.userId,
     responseUrl: action.responseUrl,
     threadTs: action.threadTs ?? action.messageTs,
+    messageTs: action.messageTs,
   };
 }
 
@@ -151,7 +171,7 @@ function runJob(config: AppConfig, job: OkJob): void {
   void processOkJob(config, job).catch(async (error) => {
     console.error('ok job failed', error);
     try {
-      await notifyUser(
+      await notifyProgress(
         config,
         job,
         `Nepovedlo se založit issue: ${error instanceof Error ? error.message : String(error)}`,
@@ -287,9 +307,10 @@ async function handleEvents(config: AppConfig, req: Request, res: Response): Pro
         userName,
         userId: reactionEvent.userId,
         threadTs: message.threadTs ?? reactionEvent.messageTs,
+        messageTs: reactionEvent.messageTs,
       };
 
-      await notifyUser(
+      await notifyProgress(
         config,
         job,
         `Zakládám Linear issue (reakce :${config.slackOkReaction}:)…`,

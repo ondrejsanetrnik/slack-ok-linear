@@ -42,6 +42,7 @@ Do this on the **same** app that owns the Signing Secret + Bot Token.
 
 1. **OAuth & Permissions** → Bot Token Scopes add:
    - `reactions:read`
+   - `reactions:write`
    - `channels:history`
    - `groups:history`
    - `chat:write`

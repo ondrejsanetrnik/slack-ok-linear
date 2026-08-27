@@ -295,7 +295,8 @@ export async function fetchMessageText(
   });
 
   const message = data.messages?.[0] ?? {};
-  const text = String(message.text ?? '').trim();
+  const text =
+    extractSlackMessageText(message) || String(message.text ?? '').trim();
   if (!text) {
     throw new Error('Nepodařilo se načíst text zprávy (bot možná nemá přístup do kanálu).');
   }
@@ -339,6 +340,43 @@ export async function postEphemeral(
     body.thread_ts = threadTs;
   }
   await slackApi(botToken, 'chat.postEphemeral', body);
+}
+
+export async function postThreadMessage(
+  botToken: string,
+  channelId: string,
+  text: string,
+  threadTs: string,
+): Promise<void> {
+  await slackApi(botToken, 'chat.postMessage', {
+    channel: channelId,
+    text,
+    thread_ts: threadTs,
+    // Keep the reply in the thread only (not also in channel).
+    reply_broadcast: false,
+  });
+}
+
+export async function addReaction(
+  botToken: string,
+  channelId: string,
+  messageTs: string,
+  emojiName: string,
+): Promise<void> {
+  const name = emojiName.replace(/^:|:$/g, '');
+  try {
+    await slackApi(botToken, 'reactions.add', {
+      channel: channelId,
+      timestamp: messageTs,
+      name,
+    });
+  } catch (error) {
+    // Already reacted is fine.
+    const message = error instanceof Error ? error.message : String(error);
+    if (!message.includes('already_reacted')) {
+      throw error;
+    }
+  }
 }
 
 export function buildThreadTaskText(
