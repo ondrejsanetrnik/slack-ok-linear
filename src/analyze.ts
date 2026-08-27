@@ -57,8 +57,8 @@ Return ONLY valid JSON with keys:
 - project_reason, priority_reason, estimate_reason: short Czech explanations
 
 Important:
+- Prefer the original (parent) Slack message as the request; use later replies only as context.
 - The full Slack conversation is appended to the Linear issue separately. Do NOT paste or restate the Slack thread in description.
-- Prefer the focused/source message; use the rest of the thread only for context.
 
 Project catalog (prefer channel + requester + topic match):
 ${projectCatalogForPrompt()}

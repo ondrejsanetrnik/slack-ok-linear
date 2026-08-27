@@ -348,19 +348,35 @@ export async function postResponseUrl(
 async function slackApi<T extends Record<string, unknown>>(
   botToken: string,
   method: string,
-  body: Record<string, unknown>,
+  params: Record<string, unknown>,
 ): Promise<T> {
+  // Form-urlencoded is reliable for conversations.replies (JSON caused invalid_arguments).
+  const body = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value === undefined || value === null) {
+      continue;
+    }
+    body.set(key, String(value));
+  }
+
   const response = await fetch(`${SLACK_API}/${method}`, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${botToken}`,
-      'Content-Type': 'application/json; charset=utf-8',
+      'Content-Type': 'application/x-www-form-urlencoded; charset=utf-8',
     },
-    body: JSON.stringify(body),
+    body,
   });
-  const data = (await response.json()) as T & { ok?: boolean; error?: string };
+  const data = (await response.json()) as T & {
+    ok?: boolean;
+    error?: string;
+    response_metadata?: { messages?: string[] };
+  };
   if (!data.ok) {
-    throw new Error(`Slack ${method} failed: ${data.error ?? response.status}`);
+    const hint = data.response_metadata?.messages?.join('; ');
+    throw new Error(
+      `Slack ${method} failed: ${data.error ?? response.status}${hint ? ` (${hint})` : ''}`,
+    );
   }
   return data;
 }
@@ -477,12 +493,12 @@ export function formatThreadConversation(
     const who = message.userId ? `<@${message.userId}>` : 'neznámý';
     const tags: string[] = [];
     if (message.isParent) {
-      tags.push('kořen vlákna');
+      tags.push('původní zpráva');
     }
-    if (focusMessageTs && message.ts === focusMessageTs) {
-      tags.push('zpráva, ze které vznikl úkol');
+    if (focusMessageTs && message.ts === focusMessageTs && !message.isParent) {
+      tags.push('spuštěná akce');
     }
-    const tagSuffix = tags.length > 0 ? ` _( ${tags.join(' · ')} )_` : '';
+    const tagSuffix = tags.length > 0 ? ` _(${tags.join(' · ')})_` : '';
     const fileNote =
       message.files.length > 0
         ? `\n_Přílohy: ${message.files.map((f) => f.name).join(', ')}_`

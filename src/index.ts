@@ -50,6 +50,8 @@ type OkJob = {
   files?: SlackFileRef[];
   slackTranscript?: string;
   slackPermalink?: string;
+  /** Thread root (original message) — eyes reaction + permalink target. */
+  rootMessageTs?: string;
   /** Caption on the message that triggered OK (before thread expand). */
   focusMessageText?: string;
 };
@@ -73,17 +75,15 @@ async function notifyProgress(config: AppConfig, job: OkJob, text: string): Prom
 async function publishResult(config: AppConfig, job: OkJob, text: string): Promise<void> {
   const botToken = config.slackBotToken;
   const channelId = job.channelId;
-  const threadTs = job.threadTs ?? job.messageTs;
+  const threadTs = job.rootMessageTs ?? job.threadTs ?? job.messageTs;
 
   if (botToken && channelId && threadTs) {
     await postThreadMessage(botToken, channelId, text, threadTs);
-    if (job.messageTs) {
-      try {
-        await addReaction(botToken, channelId, job.messageTs, 'eyes');
-      } catch (error) {
-        // Missing reactions:write must not hide a successful issue create.
-        console.warn('Could not add eyes reaction', error);
-      }
+    // Always react on the original (parent) message, not on a mid-thread click target.
+    try {
+      await addReaction(botToken, channelId, threadTs, 'eyes');
+    } catch (error) {
+      console.warn('Could not add eyes reaction', error);
     }
     return;
   }
@@ -129,14 +129,32 @@ async function enrichJobWithSlackThread(config: AppConfig, job: OkJob): Promise<
     return job;
   }
 
-  const threadTs = job.threadTs ?? job.messageTs;
+  // Resolve thread root: reply.thread_ts → parent; otherwise the message itself is the parent.
+  let rootTs = job.threadTs ?? job.messageTs;
+  try {
+    const clicked = await fetchMessageText(
+      config.slackBotToken,
+      job.channelId,
+      job.messageTs,
+    );
+    if (clicked.threadTs) {
+      rootTs = clicked.threadTs;
+    }
+    if (clicked.text) {
+      job.focusMessageText = clicked.text;
+    }
+  } catch (error) {
+    console.warn('Could not refresh clicked message before thread load', error);
+  }
+
+  job.threadTs = rootTs;
+  job.rootMessageTs = rootTs;
 
   try {
     job.slackPermalink = await getMessagePermalink(
       config.slackBotToken,
       job.channelId,
-      // Prefer thread root so the link opens the whole conversation.
-      threadTs,
+      rootTs,
     );
   } catch (error) {
     console.warn('Could not resolve Slack permalink', error);
@@ -146,35 +164,40 @@ async function enrichJobWithSlackThread(config: AppConfig, job: OkJob): Promise<
     const messages = await fetchThreadConversation(
       config.slackBotToken,
       job.channelId,
-      threadTs,
+      rootTs,
     );
-    if (messages.length > 0) {
-      job.slackTranscript = formatThreadConversation(messages, job.messageTs);
-      const threadFiles = collectThreadFiles(messages);
-      if (threadFiles.length > 0) {
-        job.files = threadFiles;
+    if (messages.length === 0) {
+      if (!job.slackTranscript) {
+        job.slackTranscript = job.focusMessageText || job.text;
       }
-
-      const focus =
-        messages.find((m) => m.ts === job.messageTs) ??
-        messages.find((m) => m.isParent) ??
-        messages[0];
-      job.focusMessageText = focus?.text ?? job.focusMessageText;
-      job.text = [
-        '## Zpráva, ze které vzniká úkol',
-        job.focusMessageText || '(bez textu)',
-        '',
-        '## Celé Slack vlákno (kořen + odpovědi)',
-        job.slackTranscript,
-        '',
-        `Kanál: #${job.channelName || job.channelId}`,
-        job.slackPermalink ? `Permalink: ${job.slackPermalink}` : null,
-      ]
-        .filter((line) => line !== null)
-        .join('\n');
-    } else if (!job.slackTranscript) {
-      job.slackTranscript = job.focusMessageText || job.text;
+      return job;
     }
+
+    job.slackTranscript = formatThreadConversation(messages, job.messageTs);
+    // Always take files from the whole thread (parent + every reply).
+    job.files = collectThreadFiles(messages);
+
+    const parent = messages.find((m) => m.isParent) ?? messages[0];
+    if (!parent) {
+      return job;
+    }
+    const clicked = messages.find((m) => m.ts === job.messageTs) ?? parent;
+
+    job.text = [
+      '## Původní zpráva (kořen vlákna)',
+      parent.text || '(bez textu)',
+      '',
+      clicked.ts !== parent.ts
+        ? `## Zpráva, na které byla spuštěna akce\n${clicked.text || '(bez textu)'}\n`
+        : null,
+      '## Celé Slack vlákno (původní zpráva + všechny odpovědi)',
+      job.slackTranscript,
+      '',
+      `Kanál: #${job.channelName || job.channelId}`,
+      job.slackPermalink ? `Permalink: ${job.slackPermalink}` : null,
+    ]
+      .filter((line) => line !== null)
+      .join('\n');
   } catch (error) {
     console.warn('Could not load Slack thread conversation', error);
     if (!job.slackTranscript) {
@@ -396,28 +419,6 @@ async function handleInteractivity(config: AppConfig, req: Request, res: Respons
     }
 
     const job = fromMessageAction(action);
-    // Prefer fresh file list from API when bot can read history (shortcut payload can omit urls).
-    if (config.slackBotToken && job.channelId && job.messageTs) {
-      try {
-        const fresh = await fetchMessageText(
-          config.slackBotToken,
-          job.channelId,
-          job.messageTs,
-        );
-        if (fresh.files.length > 0) {
-          job.files = fresh.files;
-        }
-        if (fresh.threadTs) {
-          job.threadTs = fresh.threadTs;
-        }
-        if (fresh.text) {
-          job.focusMessageText = fresh.text;
-        }
-      } catch (error) {
-        console.warn('Could not refresh message for attachments', error);
-      }
-    }
-
     runJob(config, job);
   })();
 }
