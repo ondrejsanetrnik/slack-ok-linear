@@ -12,9 +12,12 @@ import { probeLlm } from './llm.js';
 import {
   addReaction,
   buildThreadTaskText,
+  collectThreadFiles,
   downloadSlackFile,
   fetchMessageText,
+  fetchThreadConversation,
   fetchUserName,
+  formatThreadConversation,
   parseInteractivePayload,
   parseMessageAction,
   parseReactionAddedEvent,
@@ -44,6 +47,9 @@ type OkJob = {
   threadTs?: string;
   messageTs?: string;
   files?: SlackFileRef[];
+  slackTranscript?: string;
+  /** Caption on the message that triggered OK (before thread expand). */
+  focusMessageText?: string;
 };
 
 async function notifyProgress(config: AppConfig, job: OkJob, text: string): Promise<void> {
@@ -108,12 +114,64 @@ async function transferSlackFilesToLinear(
   return assets;
 }
 
+async function enrichJobWithSlackThread(config: AppConfig, job: OkJob): Promise<OkJob> {
+  if (!config.slackBotToken || !job.channelId || !job.messageTs) {
+    if (!job.slackTranscript) {
+      job.slackTranscript = job.focusMessageText || job.text;
+    }
+    return job;
+  }
+
+  const threadTs = job.threadTs ?? job.messageTs;
+  try {
+    const messages = await fetchThreadConversation(
+      config.slackBotToken,
+      job.channelId,
+      threadTs,
+    );
+    if (messages.length > 0) {
+      job.slackTranscript = formatThreadConversation(messages, job.messageTs);
+      const threadFiles = collectThreadFiles(messages);
+      if (threadFiles.length > 0) {
+        job.files = threadFiles;
+      }
+
+      const focus =
+        messages.find((m) => m.ts === job.messageTs) ??
+        messages.find((m) => m.isParent) ??
+        messages[0];
+      job.focusMessageText = focus?.text ?? job.focusMessageText;
+      job.text = [
+        '## Zpráva, ze které vzniká úkol',
+        job.focusMessageText || '(bez textu)',
+        '',
+        '## Celé Slack vlákno (kořen + odpovědi)',
+        job.slackTranscript,
+        '',
+        `Kanál: #${job.channelName || job.channelId}`,
+      ].join('\n');
+    } else if (!job.slackTranscript) {
+      job.slackTranscript = job.focusMessageText || job.text;
+    }
+  } catch (error) {
+    console.warn('Could not load Slack thread conversation', error);
+    if (!job.slackTranscript) {
+      job.slackTranscript = job.focusMessageText || job.text;
+    }
+  }
+
+  return job;
+}
+
 async function processOkJob(config: AppConfig, job: OkJob): Promise<void> {
+  await enrichJobWithSlackThread(config, job);
+
   const analysis = await analyzeTask(config, {
     text: job.text,
     channelName: job.channelName,
     userName: job.userName,
     userId: job.userId,
+    slackTranscript: job.slackTranscript,
   });
 
   const assets = await transferSlackFilesToLinear(config, job.files ?? []);
@@ -123,6 +181,7 @@ async function processOkJob(config: AppConfig, job: OkJob): Promise<void> {
       channelName: job.channelName,
       userName: job.userName,
       userId: job.userId,
+      slackTranscript: job.slackTranscript,
     }),
     assets,
   );
@@ -209,6 +268,8 @@ function fromSlash(payload: SlackSlashPayload): OkJob {
     userName: payload.user_name,
     userId: payload.user_id,
     responseUrl: payload.response_url,
+    focusMessageText: payload.text,
+    slackTranscript: payload.text,
   };
 }
 
@@ -223,6 +284,7 @@ function fromMessageAction(action: SlackMessageActionPayload): OkJob {
     threadTs: action.threadTs ?? action.messageTs,
     messageTs: action.messageTs,
     files: action.files,
+    focusMessageText: action.messageText,
   };
 }
 
@@ -312,15 +374,11 @@ async function handleInteractivity(config: AppConfig, req: Request, res: Respons
         if (fresh.files.length > 0) {
           job.files = fresh.files;
         }
-        if (fresh.text && job.text.includes('(zpráva jen s přílohou)')) {
-          job.text = buildThreadTaskText({
-            messageText: fresh.text,
-            channelName: action.channelName,
-            channelId: action.channelId,
-            threadTs: action.threadTs,
-            messageTs: action.messageTs,
-            messageUserId: action.messageUserId,
-          });
+        if (fresh.threadTs) {
+          job.threadTs = fresh.threadTs;
+        }
+        if (fresh.text) {
+          job.focusMessageText = fresh.text;
         }
       } catch (error) {
         console.warn('Could not refresh message for attachments', error);
@@ -396,6 +454,7 @@ async function handleEvents(config: AppConfig, req: Request, res: Response): Pro
         threadTs: message.threadTs ?? reactionEvent.messageTs,
         messageTs: reactionEvent.messageTs,
         files: message.files,
+        focusMessageText: message.text,
       };
 
       await notifyProgress(

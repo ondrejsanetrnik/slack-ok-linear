@@ -30,24 +30,33 @@ export type AnalyzeContext = {
   channelName: string;
   userName: string;
   userId: string;
+  /** Verbatim Slack thread / source message — appended to the issue, not rewritten. */
+  slackTranscript?: string;
 };
 
 function buildSystemPrompt(): string {
-  return `You turn a Slack /ok note into a Linear task for Gramodesky.
+  return `You turn a Slack note into a Linear task for Gramodesky.
 
 Return ONLY valid JSON with keys:
 - title: short Czech title (max ~80 chars), imperative / outcome-focused
-- description: Markdown in Czech with sections:
+- description: Markdown in Czech with ONLY these sections:
   ## Co chci
-  ## Jak k tomu přistoupím
+  1–3 sentences: what should change / what is broken. Stay faithful to the Slack source.
+  ## Návrh postupu
+  Max 2–3 short bullets. High-level direction only (what area to touch).
+  Do NOT write implementation steps, code, file paths, or a detailed plan — Cursor will implement.
   ## Poznámky
-  Keep the author's intent. Expand lightly for clarity; do not invent requirements.
+  Optional; omit the section if empty. Only facts that help (links, IDs, urgency). Do not invent.
 - priority: Linear priority integer — 0=None, 1=Urgent, 2=High, 3=Medium, 4=Low
   Infer from urgency wording, blockers, customer impact, and tone (e.g. "hned", "blokuje", "dnes" → 1–2).
 - estimate_hours: number 0–6 (hours of work)
   0 = trivial, 1 = simple, 2 = medium, 3–6 = hard / multi-step
 - project_id: UUID from the catalog below, or null if unclear
 - project_reason, priority_reason, estimate_reason: short Czech explanations
+
+Important:
+- The full Slack conversation is appended to the Linear issue separately. Do NOT paste or restate the Slack thread in description.
+- Prefer the focused/source message; use the rest of the thread only for context.
 
 Project catalog (prefer channel + requester + topic match):
 ${projectCatalogForPrompt()}
@@ -79,7 +88,7 @@ export async function analyzeTask(
     `Requester Slack user: ${ctx.userName} (${ctx.userId})`,
     channelHint ? `Channel heuristic project: ${channelHint.name} (${channelHint.id})` : null,
     '',
-    'User note for /ok:',
+    'Source for the task (Slack):',
     ctx.text,
   ]
     .filter((line) => line !== null)
@@ -123,7 +132,7 @@ export async function analyzeTask(
 
 export function buildIssueDescription(analysis: TaskAnalysis, ctx: AnalyzeContext): string {
   const meta = [
-    `_Zdroj: Slack \`/ok\` · #${ctx.channelName} · @${ctx.userName}_`,
+    `_Zdroj: Slack · #${ctx.channelName} · @${ctx.userName}_`,
     analysis.project_reason ? `_Projekt: ${analysis.project_reason}_` : null,
     analysis.priority_reason ? `_Priorita: ${analysis.priority_reason}_` : null,
     analysis.estimate_reason
@@ -134,5 +143,10 @@ export function buildIssueDescription(analysis: TaskAnalysis, ctx: AnalyzeContex
     .filter(Boolean)
     .join('\n');
 
-  return `${analysis.description.trim()}\n\n---\n${meta}`;
+  const transcript = (ctx.slackTranscript ?? '').trim();
+  const conversationBlock = transcript
+    ? `\n\n## Slack konverzace\n\n${transcript}`
+    : `\n\n## Původní zpráva\n\n${ctx.text.trim()}`;
+
+  return `${analysis.description.trim()}${conversationBlock}\n\n---\n${meta}`;
 }

@@ -401,6 +401,108 @@ export async function fetchMessageText(
   };
 }
 
+export type SlackThreadMessage = {
+  ts: string;
+  userId: string | undefined;
+  text: string;
+  files: SlackFileRef[];
+  isParent: boolean;
+};
+
+export async function fetchThreadConversation(
+  botToken: string,
+  channelId: string,
+  threadTs: string,
+): Promise<SlackThreadMessage[]> {
+  const messages: SlackThreadMessage[] = [];
+  let cursor: string | undefined;
+
+  do {
+    const body: Record<string, unknown> = {
+      channel: channelId,
+      ts: threadTs,
+      inclusive: true,
+      limit: 200,
+    };
+    if (cursor) {
+      body.cursor = cursor;
+    }
+
+    const data = await slackApi<{
+      messages?: Array<Record<string, unknown>>;
+      has_more?: boolean;
+      response_metadata?: { next_cursor?: string };
+    }>(botToken, 'conversations.replies', body);
+
+    for (const raw of data.messages ?? []) {
+      const message = asRecord(raw);
+      const ts = String(message.ts ?? '');
+      if (!ts) {
+        continue;
+      }
+      const text =
+        extractSlackMessageText(message) || String(message.text ?? '').trim();
+      const files = extractSlackFiles(message);
+      if (!text && files.length === 0) {
+        continue;
+      }
+      messages.push({
+        ts,
+        userId: message.user ? String(message.user) : undefined,
+        text: text || '(zpráva jen s přílohou)',
+        files,
+        isParent: ts === threadTs,
+      });
+    }
+
+    cursor = data.response_metadata?.next_cursor || undefined;
+    if (!data.has_more) {
+      cursor = undefined;
+    }
+  } while (cursor);
+
+  return messages;
+}
+
+export function formatThreadConversation(
+  messages: SlackThreadMessage[],
+  focusMessageTs?: string,
+): string {
+  if (messages.length === 0) {
+    return '';
+  }
+
+  const lines: string[] = [];
+  for (const message of messages) {
+    const who = message.userId ? `<@${message.userId}>` : 'neznámý';
+    const tags: string[] = [];
+    if (message.isParent) {
+      tags.push('kořen vlákna');
+    }
+    if (focusMessageTs && message.ts === focusMessageTs) {
+      tags.push('zpráva, ze které vznikl úkol');
+    }
+    const tagSuffix = tags.length > 0 ? ` _( ${tags.join(' · ')} )_` : '';
+    const fileNote =
+      message.files.length > 0
+        ? `\n_Přílohy: ${message.files.map((f) => f.name).join(', ')}_`
+        : '';
+    lines.push(`**${who}**${tagSuffix}\n${message.text}${fileNote}`);
+  }
+
+  return lines.join('\n\n');
+}
+
+export function collectThreadFiles(messages: SlackThreadMessage[]): SlackFileRef[] {
+  const byId = new Map<string, SlackFileRef>();
+  for (const message of messages) {
+    for (const file of message.files) {
+      byId.set(file.id, file);
+    }
+  }
+  return [...byId.values()];
+}
+
 export async function fetchUserName(botToken: string, userId: string): Promise<string> {
   try {
     const data = await slackApi<{
