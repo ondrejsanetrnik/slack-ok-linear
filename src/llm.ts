@@ -101,10 +101,20 @@ async function callAnthropic(
     }),
   });
 
-  const body = (await response.json()) as {
+  const raw = await response.text();
+  let body: {
     error?: { message?: string };
     content?: Array<{ type: string; text?: string }>;
   };
+  try {
+    body = JSON.parse(raw) as typeof body;
+  } catch {
+    throw new LlmError(
+      `Anthropic non-JSON HTTP ${response.status}: ${raw.slice(0, 180)}`,
+      'anthropic',
+      response.status,
+    );
+  }
 
   if (!response.ok) {
     throw new LlmError(
