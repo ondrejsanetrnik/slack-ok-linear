@@ -516,6 +516,38 @@ function main(): void {
     res.type('text/plain').send('ok');
   });
 
+  app.get('/bot-status', async (_req, res) => {
+    if (!config.slackBotToken) {
+      res.status(500).json({ ok: false, error: 'SLACK_BOT_TOKEN missing' });
+      return;
+    }
+    try {
+      const response = await fetch('https://slack.com/api/auth.test', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${config.slackBotToken}` },
+      });
+      const data = (await response.json()) as {
+        ok?: boolean;
+        user?: string;
+        user_id?: string;
+        bot_id?: string;
+        error?: string;
+      };
+      res.json({
+        ok: Boolean(data.ok),
+        bot_user: data.user ?? null,
+        bot_user_id: data.user_id ?? null,
+        bot_id: data.bot_id ?? null,
+        error: data.error ?? null,
+      });
+    } catch (error) {
+      res.status(500).json({
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
+
   // Slack / browsers sometimes probe Request URLs with GET.
   app.get('/slack/interactions', (_req, res) => {
     res.type('text/plain').send('ok');
@@ -554,6 +586,21 @@ function main(): void {
     console.log(
       `slack-ok-linear listening on :${config.port} (reaction :${config.slackOkReaction}:)`,
     );
+    if (config.slackBotToken) {
+      void fetch('https://slack.com/api/auth.test', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${config.slackBotToken}` },
+      })
+        .then(async (response) => {
+          const data = (await response.json()) as { ok?: boolean; user?: string; error?: string };
+          if (data.ok) {
+            console.log(`Slack bot identity: ${data.user}`);
+          } else {
+            console.warn(`Slack bot auth.test failed: ${data.error ?? 'unknown'}`);
+          }
+        })
+        .catch((error) => console.warn('Slack bot auth.test error', error));
+    }
   });
 }
 
