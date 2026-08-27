@@ -76,7 +76,12 @@ async function publishResult(config: AppConfig, job: OkJob, text: string): Promi
   if (botToken && channelId && threadTs) {
     await postThreadMessage(botToken, channelId, text, threadTs);
     if (job.messageTs) {
-      await addReaction(botToken, channelId, job.messageTs, 'eyes');
+      try {
+        await addReaction(botToken, channelId, job.messageTs, 'eyes');
+      } catch (error) {
+        // Missing reactions:write must not hide a successful issue create.
+        console.warn('Could not add eyes reaction', error);
+      }
     }
     return;
   }

@@ -24,9 +24,24 @@ Create Linear issues from Slack **threads** via:
 - `POST /slack/commands/ok` — Slash `/ok`
 - `GET /health`, `GET /llm-status`
 
-## Slack app setup (Grambot)
+## Slack app setup (jedna appka)
 
-Do this on the **same** app that owns the Signing Secret + Bot Token.
+**Signing Secret + Bot Token + zkratka musí být ze stejné Slack appky.**
+
+Teď je typicky: zkratka/ephemeral = **Andy**, zápis do vlákna = **Grambot** (`SLACK_BOT_TOKEN` z e-shopu) → přílohy a historie selžou.
+
+Doporučení: vše na **Andy**.
+
+1. Andy → **OAuth & Permissions** → Bot scopes:
+   - `chat:write`
+   - `reactions:read` / `reactions:write`
+   - `channels:history` / `groups:history`
+   - `files:read`
+   - `users:read`
+2. **Reinstall to Workspace**
+3. Zkopíruj Andy **Bot User OAuth Token** (`xoxb-…`) do Railway `SLACK_BOT_TOKEN`
+4. Signing Secret nech Andyho (už sedí se zkratkou)
+5. Invite `@Andy` do kanálu
 
 ### A) Message shortcut
 
@@ -40,19 +55,12 @@ Do this on the **same** app that owns the Signing Secret + Bot Token.
 
 ### B) Emoji `:ticket:`
 
-1. **OAuth & Permissions** → Bot Token Scopes add:
-   - `reactions:read`
-   - `reactions:write`
-   - `channels:history`
-   - `groups:history`
-   - `chat:write`
-   - `users:read`
-   - `files:read` (přílohy / screenshoty do Linear)
+1. Bot scopes výše (včetně `reactions:*` a `files:read`)
 2. **Event Subscriptions** → ON  
    Request URL: `https://slack-ok-linear-production.up.railway.app/slack/events`  
    Subscribe to bot events: `reaction_added`
 3. **Reinstall to Workspace**
-4. Invite `@Grambot` into the channel if needed
+4. Invite bot into the channel
 5. On a thread message add reaction 🎫 (`:ticket:`)
 
 ## Deploy
