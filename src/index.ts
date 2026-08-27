@@ -18,6 +18,7 @@ import {
   fetchThreadConversation,
   fetchUserName,
   formatThreadConversation,
+  getMessagePermalink,
   parseInteractivePayload,
   parseMessageAction,
   parseReactionAddedEvent,
@@ -48,6 +49,7 @@ type OkJob = {
   messageTs?: string;
   files?: SlackFileRef[];
   slackTranscript?: string;
+  slackPermalink?: string;
   /** Caption on the message that triggered OK (before thread expand). */
   focusMessageText?: string;
 };
@@ -128,6 +130,18 @@ async function enrichJobWithSlackThread(config: AppConfig, job: OkJob): Promise<
   }
 
   const threadTs = job.threadTs ?? job.messageTs;
+
+  try {
+    job.slackPermalink = await getMessagePermalink(
+      config.slackBotToken,
+      job.channelId,
+      // Prefer thread root so the link opens the whole conversation.
+      threadTs,
+    );
+  } catch (error) {
+    console.warn('Could not resolve Slack permalink', error);
+  }
+
   try {
     const messages = await fetchThreadConversation(
       config.slackBotToken,
@@ -154,7 +168,10 @@ async function enrichJobWithSlackThread(config: AppConfig, job: OkJob): Promise<
         job.slackTranscript,
         '',
         `Kanál: #${job.channelName || job.channelId}`,
-      ].join('\n');
+        job.slackPermalink ? `Permalink: ${job.slackPermalink}` : null,
+      ]
+        .filter((line) => line !== null)
+        .join('\n');
     } else if (!job.slackTranscript) {
       job.slackTranscript = job.focusMessageText || job.text;
     }
@@ -187,6 +204,7 @@ async function processOkJob(config: AppConfig, job: OkJob): Promise<void> {
       userName: job.userName,
       userId: job.userId,
       slackTranscript: job.slackTranscript,
+      slackPermalink: job.slackPermalink,
     }),
     assets,
   );
@@ -202,6 +220,19 @@ async function processOkJob(config: AppConfig, job: OkJob): Promise<void> {
     estimate: analysis.estimate_hours,
     cycleId: null,
   });
+
+  if (job.slackPermalink) {
+    try {
+      await attachUrlToIssue(
+        config.linearApiKey,
+        issue.id,
+        job.slackPermalink,
+        'Slack konverzace',
+      );
+    } catch (error) {
+      console.error(`Failed to attach Slack permalink to ${issue.identifier}`, error);
+    }
+  }
 
   for (const asset of assets) {
     try {

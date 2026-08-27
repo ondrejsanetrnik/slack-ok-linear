@@ -32,6 +32,8 @@ export type AnalyzeContext = {
   userId: string;
   /** Verbatim Slack thread / source message — appended to the issue, not rewritten. */
   slackTranscript?: string;
+  /** Clickable Slack permalink to the source message / thread. */
+  slackPermalink?: string;
 };
 
 function buildSystemPrompt(): string {
@@ -144,9 +146,13 @@ export function buildIssueDescription(analysis: TaskAnalysis, ctx: AnalyzeContex
     .join('\n');
 
   const transcript = (ctx.slackTranscript ?? '').trim();
+  const permalink = (ctx.slackPermalink ?? '').trim();
+  const linkLine = permalink ? `[Otevřít ve Slacku](${permalink})\n\n` : '';
   const conversationBlock = transcript
-    ? `\n\n## Slack konverzace\n\n${transcript}`
-    : `\n\n## Původní zpráva\n\n${ctx.text.trim()}`;
+    ? `\n\n## Slack konverzace\n\n${linkLine}${transcript}`
+    : permalink
+      ? `\n\n## Slack konverzace\n\n${linkLine}`
+      : `\n\n## Původní zpráva\n\n${ctx.text.trim()}`;
 
   return `${analysis.description.trim()}${conversationBlock}\n\n---\n${meta}`;
 }

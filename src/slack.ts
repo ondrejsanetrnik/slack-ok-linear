@@ -574,6 +574,22 @@ export async function addReaction(
   }
 }
 
+export async function getMessagePermalink(
+  botToken: string,
+  channelId: string,
+  messageTs: string,
+): Promise<string> {
+  const data = await slackApi<{ permalink?: string }>(botToken, 'chat.getPermalink', {
+    channel: channelId,
+    message_ts: messageTs,
+  });
+  const permalink = String(data.permalink ?? '').trim();
+  if (!permalink) {
+    throw new Error('Slack chat.getPermalink returned empty permalink');
+  }
+  return permalink;
+}
+
 export function buildThreadTaskText(
   input: {
     messageText: string;
