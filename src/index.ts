@@ -242,20 +242,17 @@ async function processOkJob(config: AppConfig, job: OkJob): Promise<void> {
     }
   }
 
-  const lines = [
-    `Hotovo: *<${issue.url}|${issue.identifier}>* — ${issue.title}`,
-    `Priorita: ${analysis.priority} · Estimate: ${analysis.estimate_hours} h` +
-      (analysis.project_name ? ` · Projekt: ${analysis.project_name}` : ''),
-  ];
-  if ((job.files?.length ?? 0) > 0) {
-    lines.push(
-      assets.length > 0
-        ? `Přílohy: ${assets.length}/${job.files!.length}`
-        : 'Přílohy: nepodařilo se přenést (zkontroluj scope `files:read`)',
+  if ((job.files?.length ?? 0) > 0 && assets.length < (job.files?.length ?? 0)) {
+    console.warn(
+      `Attachments incomplete for ${issue.identifier}: ${assets.length}/${job.files!.length}`,
     );
   }
 
-  await publishResult(config, job, lines.join('\n'));
+  await publishResult(
+    config,
+    job,
+    `Díky, úkol založen!\n*<${issue.url}|${issue.identifier}>* — ${issue.title}`,
+  );
 }
 
 async function handleOkCommand(config: AppConfig, req: Request, res: Response): Promise<void> {
