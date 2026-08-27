@@ -80,13 +80,18 @@ async function callAnthropic(
     .filter((m) => m.role !== 'system')
     .map((m) => ({ role: m.role === 'assistant' ? 'assistant' : 'user', content: m.content }));
 
+  const headers: Record<string, string> = {
+    'x-api-key': key,
+    'anthropic-version': '2023-06-01',
+    'Content-Type': 'application/json',
+  };
+  if (config.anthropicWorkspaceId) {
+    headers['anthropic-workspace-id'] = config.anthropicWorkspaceId;
+  }
+
   const response = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
-    headers: {
-      'x-api-key': key,
-      'anthropic-version': '2023-06-01',
-      'Content-Type': 'application/json',
-    },
+    headers,
     body: JSON.stringify({
       model: config.anthropicModel,
       max_tokens: 2048,

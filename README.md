@@ -18,6 +18,7 @@ Slack slash command **`/ok`** → AI (OpenRouter or Anthropic) → Linear issue 
 | `LINEAR_API_KEY` | yes | Linear → Settings → API → Personal API key |
 | `OPENROUTER_API_KEY` | one of LLM | Preferred when working |
 | `ANTHROPIC_API_KEY` | one of LLM | Fallback / primary if OpenRouter down |
+| `ANTHROPIC_WORKSPACE_ID` | for some keys | `wrkspc_…` from Claude Console → Workspaces |
 | `LLM_PROVIDER` | no | `auto` (default), `openrouter`, `anthropic` |
 | `OPENROUTER_MODEL` | no | default `openai/gpt-5-mini` |
 | `ANTHROPIC_MODEL` | no | default `claude-sonnet-4-20250514` |

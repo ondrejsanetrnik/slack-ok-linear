@@ -16,6 +16,7 @@ export type AppConfig = {
   openRouterModel: string;
   anthropicApiKey: string | undefined;
   anthropicModel: string;
+  anthropicWorkspaceId: string | undefined;
   llmProvider: 'auto' | 'openrouter' | 'anthropic';
 };
 
@@ -46,6 +47,10 @@ export function loadConfig(): AppConfig {
     openRouterModel: process.env.OPENROUTER_MODEL?.trim() || 'openai/gpt-5-mini',
     anthropicApiKey: process.env.ANTHROPIC_API_KEY?.trim() || undefined,
     anthropicModel: process.env.ANTHROPIC_MODEL?.trim() || 'claude-sonnet-4-20250514',
+    anthropicWorkspaceId:
+      process.env.ANTHROPIC_WORKSPACE_ID?.trim() ||
+      process.env.ANTHROPIC_AWS_WORKSPACE_ID?.trim() ||
+      undefined,
     llmProvider,
   };
 }
