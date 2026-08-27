@@ -3,6 +3,7 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
 import type { Request } from 'express';
 
 const MAX_CLOCK_SKEW_SEC = 60 * 5;
+const SLACK_API = 'https://slack.com/api';
 
 export function verifySlackSignature(
   signingSecret: string,
@@ -58,7 +59,14 @@ export type SlackMessageActionPayload = {
   messageTs: string;
   threadTs: string | undefined;
   messageUserId: string | undefined;
-  permalinkHint: string | undefined;
+};
+
+export type SlackReactionAddedEvent = {
+  userId: string;
+  reaction: string;
+  channelId: string;
+  messageTs: string;
+  itemUserId: string | undefined;
 };
 
 export function parseSlashPayload(body: Record<string, unknown>): SlackSlashPayload {
@@ -120,7 +128,35 @@ export function parseMessageAction(payload: Record<string, unknown>): SlackMessa
     messageTs: String(message.ts ?? ''),
     threadTs: message.thread_ts ? String(message.thread_ts) : undefined,
     messageUserId: message.user ? String(message.user) : undefined,
-    permalinkHint: undefined,
+  };
+}
+
+export function parseReactionAddedEvent(
+  event: Record<string, unknown>,
+): SlackReactionAddedEvent | null {
+  if (String(event.type ?? '') !== 'reaction_added') {
+    return null;
+  }
+
+  const item = asRecord(event.item);
+  if (String(item.type ?? '') !== 'message') {
+    return null;
+  }
+
+  const channelId = String(item.channel ?? '');
+  const messageTs = String(item.ts ?? '');
+  const userId = String(event.user ?? '');
+  const reaction = String(event.reaction ?? '');
+  if (!channelId || !messageTs || !userId || !reaction) {
+    return null;
+  }
+
+  return {
+    userId,
+    reaction,
+    channelId,
+    messageTs,
+    itemUserId: event.item_user ? String(event.item_user) : undefined,
   };
 }
 
@@ -144,15 +180,107 @@ export async function postResponseUrl(
   }
 }
 
-export function buildThreadTaskText(action: SlackMessageActionPayload, extraNotes?: string): string {
+async function slackApi<T extends Record<string, unknown>>(
+  botToken: string,
+  method: string,
+  body: Record<string, unknown>,
+): Promise<T> {
+  const response = await fetch(`${SLACK_API}/${method}`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${botToken}`,
+      'Content-Type': 'application/json; charset=utf-8',
+    },
+    body: JSON.stringify(body),
+  });
+  const data = (await response.json()) as T & { ok?: boolean; error?: string };
+  if (!data.ok) {
+    throw new Error(`Slack ${method} failed: ${data.error ?? response.status}`);
+  }
+  return data;
+}
+
+export async function fetchMessageText(
+  botToken: string,
+  channelId: string,
+  messageTs: string,
+): Promise<{ text: string; threadTs: string | undefined; channelName: string | undefined }> {
+  const data = await slackApi<{
+    messages?: Array<Record<string, unknown>>;
+    channel?: Record<string, unknown>;
+  }>(botToken, 'conversations.history', {
+    channel: channelId,
+    latest: messageTs,
+    inclusive: true,
+    limit: 1,
+  });
+
+  const message = data.messages?.[0] ?? {};
+  const text = String(message.text ?? '').trim();
+  if (!text) {
+    throw new Error('Nepodařilo se načíst text zprávy (bot možná nemá přístup do kanálu).');
+  }
+
+  return {
+    text,
+    threadTs: message.thread_ts ? String(message.thread_ts) : undefined,
+    channelName: undefined,
+  };
+}
+
+export async function fetchUserName(botToken: string, userId: string): Promise<string> {
+  try {
+    const data = await slackApi<{
+      user?: { name?: string; real_name?: string; profile?: { display_name?: string } };
+    }>(botToken, 'users.info', { user: userId });
+    return (
+      data.user?.profile?.display_name ||
+      data.user?.real_name ||
+      data.user?.name ||
+      userId
+    );
+  } catch {
+    return userId;
+  }
+}
+
+export async function postEphemeral(
+  botToken: string,
+  channelId: string,
+  userId: string,
+  text: string,
+  threadTs?: string,
+): Promise<void> {
+  const body: Record<string, unknown> = {
+    channel: channelId,
+    user: userId,
+    text,
+  };
+  if (threadTs) {
+    body.thread_ts = threadTs;
+  }
+  await slackApi(botToken, 'chat.postEphemeral', body);
+}
+
+export function buildThreadTaskText(
+  input: {
+    messageText: string;
+    channelName?: string;
+    channelId?: string;
+    threadTs?: string;
+    messageTs?: string;
+    messageUserId?: string;
+  },
+  extraNotes?: string,
+): string {
   const parts = [
     '## Zpráva ze Slack threadu',
-    action.messageText,
+    input.messageText,
     '',
-    `Kanál: #${action.channelName || action.channelId}`,
-    action.threadTs ? `Thread ts: ${action.threadTs}` : null,
-    action.messageTs ? `Message ts: ${action.messageTs}` : null,
-    action.messageUserId ? `Autor zprávy: <@${action.messageUserId}>` : null,
+    `Kanál: #${input.channelName || input.channelId || 'unknown'}`,
+    input.threadTs ? `Thread ts: ${input.threadTs}` : null,
+    input.messageTs ? `Message ts: ${input.messageTs}` : null,
+    input.messageUserId ? `Autor zprávy: <@${input.messageUserId}>` : null,
   ].filter((line) => line !== null);
 
   const notes = (extraNotes ?? '').trim();

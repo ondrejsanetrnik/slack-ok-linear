@@ -8,6 +8,7 @@ export type AppConfig = {
   port: number;
   slackSigningSecret: string;
   slackBotToken: string | undefined;
+  slackOkReaction: string;
   linearApiKey: string;
   teamId: string;
   assigneeId: string;
@@ -39,6 +40,8 @@ export function loadConfig(): AppConfig {
     port: Number(process.env.PORT ?? '8000'),
     slackSigningSecret: required('SLACK_SIGNING_SECRET'),
     slackBotToken: process.env.SLACK_BOT_TOKEN?.trim() || undefined,
+    // Emoji short name without colons, e.g. ticket → :ticket:
+    slackOkReaction: (process.env.SLACK_OK_REACTION ?? 'ticket').trim().replace(/^:|:$/g, '') || 'ticket',
     linearApiKey: required('LINEAR_API_KEY'),
     teamId: process.env.LINEAR_TEAM_ID?.trim() || DEFAULT_TEAM_ID,
     assigneeId: process.env.LINEAR_ASSIGNEE_ID?.trim() || DEFAULT_ASSIGNEE_ID,

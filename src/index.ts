@@ -6,9 +6,13 @@ import { createIssue } from './linear.js';
 import { probeLlm } from './llm.js';
 import {
   buildThreadTaskText,
+  fetchMessageText,
+  fetchUserName,
   parseInteractivePayload,
   parseMessageAction,
+  parseReactionAddedEvent,
   parseSlashPayload,
+  postEphemeral,
   postResponseUrl,
   verifySlackSignature,
   type SlackMessageActionPayload,
@@ -24,10 +28,29 @@ function readRawBody(req: Request, _res: Response, buf: Buffer): void {
 type OkJob = {
   text: string;
   channelName: string;
+  channelId?: string;
   userName: string;
   userId: string;
-  responseUrl: string;
+  responseUrl?: string;
+  threadTs?: string;
 };
+
+async function notifyUser(config: AppConfig, job: OkJob, text: string): Promise<void> {
+  if (job.responseUrl) {
+    await postResponseUrl(job.responseUrl, {
+      response_type: 'ephemeral',
+      text,
+    });
+    return;
+  }
+
+  if (!config.slackBotToken || !job.channelId) {
+    console.warn('No response_url or bot token to notify user:', text);
+    return;
+  }
+
+  await postEphemeral(config.slackBotToken, job.channelId, job.userId, text, job.threadTs);
+}
 
 async function processOkJob(config: AppConfig, job: OkJob): Promise<void> {
   const analysis = await analyzeTask(config, {
@@ -60,10 +83,7 @@ async function processOkJob(config: AppConfig, job: OkJob): Promise<void> {
       (analysis.project_name ? ` · Projekt: ${analysis.project_name}` : ''),
   ];
 
-  await postResponseUrl(job.responseUrl, {
-    response_type: 'ephemeral',
-    text: lines.join('\n'),
-  });
+  await notifyUser(config, job, lines.join('\n'));
 }
 
 async function handleOkCommand(config: AppConfig, req: Request, res: Response): Promise<void> {
@@ -86,9 +106,9 @@ async function handleOkCommand(config: AppConfig, req: Request, res: Response): 
     res.status(200).json({
       response_type: 'ephemeral',
       text: [
-        '*Použití*',
-        'Ve *vlákně* Slack `/ok` nepodporuje.',
-        'Použij zkratku u zprávy: ⋮ → *OK → Linear*.',
+        '*Ve vlákně použij:*',
+        `• emoji :${config.slackOkReaction}: na zprávu`,
+        '• nebo ⋮ → *OK → Linear*',
         '',
         'V kanálu (mimo thread): `/ok Co chci: …`',
       ].join('\n'),
@@ -108,6 +128,7 @@ function fromSlash(payload: SlackSlashPayload): OkJob {
   return {
     text: payload.text,
     channelName: payload.channel_name,
+    channelId: payload.channel_id,
     userName: payload.user_name,
     userId: payload.user_id,
     responseUrl: payload.response_url,
@@ -118,9 +139,11 @@ function fromMessageAction(action: SlackMessageActionPayload): OkJob {
   return {
     text: buildThreadTaskText(action),
     channelName: action.channelName,
+    channelId: action.channelId,
     userName: action.userName,
     userId: action.userId,
     responseUrl: action.responseUrl,
+    threadTs: action.threadTs ?? action.messageTs,
   };
 }
 
@@ -128,12 +151,13 @@ function runJob(config: AppConfig, job: OkJob): void {
   void processOkJob(config, job).catch(async (error) => {
     console.error('ok job failed', error);
     try {
-      await postResponseUrl(job.responseUrl, {
-        response_type: 'ephemeral',
-        text: `Nepovedlo se založit issue: ${error instanceof Error ? error.message : String(error)}`,
-      });
+      await notifyUser(
+        config,
+        job,
+        `Nepovedlo se založit issue: ${error instanceof Error ? error.message : String(error)}`,
+      );
     } catch (postError) {
-      console.error('response_url error', postError);
+      console.error('notify failed', postError);
     }
   });
 }
@@ -152,7 +176,6 @@ async function handleInteractivity(config: AppConfig, req: Request, res: Respons
     return;
   }
 
-  // Slack URL verification (rare on interactivity, but safe).
   if (String(payload.type ?? '') === 'url_verification') {
     res.status(200).json({ challenge: payload.challenge });
     return;
@@ -164,8 +187,6 @@ async function handleInteractivity(config: AppConfig, req: Request, res: Respons
     return;
   }
 
-  // Accept any message shortcut on this app (callback_id set in Slack UI).
-  // Message actions must ACK with empty 200; follow up via response_url.
   res.status(200).send();
 
   void (async () => {
@@ -178,6 +199,94 @@ async function handleInteractivity(config: AppConfig, req: Request, res: Respons
       console.error('ack via response_url failed', error);
     }
     runJob(config, fromMessageAction(action));
+  })();
+}
+
+async function handleEvents(config: AppConfig, req: Request, res: Response): Promise<void> {
+  const rawBody = (req as RawBodyRequest).rawBody;
+  const body = req.body as Record<string, unknown>;
+
+  // URL verification has no usable signature content in some setups; still verify when possible.
+  if (String(body.type ?? '') === 'url_verification') {
+    res.status(200).json({ challenge: body.challenge });
+    return;
+  }
+
+  if (!rawBody || !verifySlackSignature(config.slackSigningSecret, req, rawBody)) {
+    res.status(401).send('invalid signature');
+    return;
+  }
+
+  if (String(body.type ?? '') !== 'event_callback') {
+    res.status(200).send('');
+    return;
+  }
+
+  const event = (typeof body.event === 'object' && body.event !== null
+    ? body.event
+    : {}) as Record<string, unknown>;
+
+  const reactionEvent = parseReactionAddedEvent(event);
+  res.status(200).send('');
+
+  if (!reactionEvent) {
+    return;
+  }
+
+  if (reactionEvent.reaction !== config.slackOkReaction) {
+    return;
+  }
+
+  if (!config.slackBotToken) {
+    console.error('SLACK_BOT_TOKEN required for emoji reactions');
+    return;
+  }
+
+  void (async () => {
+    const botToken = config.slackBotToken!;
+    try {
+      const message = await fetchMessageText(
+        botToken,
+        reactionEvent.channelId,
+        reactionEvent.messageTs,
+      );
+      const userName = await fetchUserName(botToken, reactionEvent.userId);
+
+      const job: OkJob = {
+        text: buildThreadTaskText({
+          messageText: message.text,
+          channelId: reactionEvent.channelId,
+          threadTs: message.threadTs,
+          messageTs: reactionEvent.messageTs,
+          messageUserId: reactionEvent.itemUserId,
+        }),
+        channelName: reactionEvent.channelId,
+        channelId: reactionEvent.channelId,
+        userName,
+        userId: reactionEvent.userId,
+        threadTs: message.threadTs ?? reactionEvent.messageTs,
+      };
+
+      await notifyUser(
+        config,
+        job,
+        `Zakládám Linear issue (reakce :${config.slackOkReaction}:)…`,
+      );
+      await processOkJob(config, job);
+    } catch (error) {
+      console.error('reaction ok failed', error);
+      try {
+        await postEphemeral(
+          botToken,
+          reactionEvent.channelId,
+          reactionEvent.userId,
+          `Nepovedlo se založit issue: ${error instanceof Error ? error.message : String(error)}`,
+          reactionEvent.messageTs,
+        );
+      } catch (notifyError) {
+        console.error('reaction notify failed', notifyError);
+      }
+    }
   })();
 }
 
@@ -231,8 +340,14 @@ function main(): void {
     void handleInteractivity(config, req, res);
   });
 
+  app.post('/slack/events', (req, res) => {
+    void handleEvents(config, req, res);
+  });
+
   app.listen(config.port, () => {
-    console.log(`slack-ok-linear listening on :${config.port}`);
+    console.log(
+      `slack-ok-linear listening on :${config.port} (reaction :${config.slackOkReaction}:)`,
+    );
   });
 }
 

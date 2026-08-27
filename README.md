@@ -1,63 +1,58 @@
 # slack-ok-linear
 
-Slack **message shortcut** (works in threads) → AI → Linear issue in **Gramo IT**.
+Create Linear issues from Slack **threads** via:
 
-Slash `/ok` still works in channels, but **not in threads** (Slack limitation).
-
-## Thread flow (recommended)
-
-1. In a thread, open ⋮ on the message (error / your notes)
-2. **OK → Linear**
-3. Agent creates the issue; you get an ephemeral link
-
-## Channel flow
-
-`/ok Co chci: … / Jak přistoupím: … / Poznámky: …`
+1. **Emoji** `:ticket:` on a message (recommended)
+2. **Message shortcut** ⋮ → **OK → Linear**
+3. Slash `/ok` only works **outside** threads (Slack limitation)
 
 ## Env
 
 | Variable | Required | Notes |
 |----------|----------|-------|
-| `SLACK_SIGNING_SECRET` | yes | Slack app → Basic Information |
-| `LINEAR_API_KEY` | yes | Linear → Settings → API → Personal API key |
-| `OPENROUTER_API_KEY` | one of LLM | Preferred when working |
-| `ANTHROPIC_API_KEY` | one of LLM | Fallback / primary if OpenRouter down |
-| `ANTHROPIC_WORKSPACE_ID` | for some keys | `wrkspc_…` from Claude Console → Workspaces |
-| `LLM_PROVIDER` | no | `auto` (default), `openrouter`, `anthropic` |
-| `OPENROUTER_MODEL` | no | default `openai/gpt-5-mini` |
-| `ANTHROPIC_MODEL` | no | default `claude-sonnet-4-5` |
-| `SLACK_BOT_TOKEN` | no | reserved |
-| `LINEAR_TEAM_ID` | no | defaults to Gramo IT |
-| `LINEAR_ASSIGNEE_ID` | no | defaults to Ondra |
-| `LINEAR_STATE_NAME` | no | default `Todo` |
-| `PORT` | no | Railway sets this |
+| `SLACK_SIGNING_SECRET` | yes | Same Slack app as the bot |
+| `SLACK_BOT_TOKEN` | yes for emoji | `xoxb-…` Bot User OAuth Token |
+| `SLACK_OK_REACTION` | no | default `ticket` |
+| `LINEAR_API_KEY` | yes | |
+| `ANTHROPIC_API_KEY` / `OPENROUTER_API_KEY` | one | |
+| `LLM_PROVIDER` | no | `auto` / `anthropic` / `openrouter` |
 
 ## Endpoints
 
-- `GET /health` — healthcheck
-- `GET /llm-status` — probe OpenRouter + Anthropic
-- `POST /slack/commands/ok` — Slash Command Request URL
-- `POST /slack/interactions` — Interactivity & Shortcuts Request URL
+- `POST /slack/events` — Event Subscriptions (reactions)
+- `POST /slack/interactions` — Message shortcuts
+- `POST /slack/commands/ok` — Slash `/ok`
+- `GET /health`, `GET /llm-status`
 
-## Slack app setup (threads)
+## Slack app setup (Grambot)
+
+Do this on the **same** app that owns the Signing Secret + Bot Token.
+
+### A) Message shortcut
 
 1. **Interactivity & Shortcuts** → ON  
-   Request URL: `https://YOUR-SERVICE.up.railway.app/slack/interactions`
-2. **Create New Shortcut** → **On messages**
-   - Name: `OK → Linear`
-   - Short description: `Založí Linear issue ze zprávy`
+   Request URL: `https://slack-ok-linear-production.up.railway.app/slack/interactions`
+2. **Create New Shortcut** → **On messages** (not global)  
+   - Name: `OK → Linear`  
    - Callback ID: `ok_linear`
-3. Reinstall app if Slack asks
-4. In a thread: ⋮ on a message → **OK → Linear**
+3. In Slack search the shortcut as **OK** or **Linear** (not „nový“)
+4. Reinstall app
 
-## Local
+### B) Emoji `:ticket:`
 
-```bash
-cp .env.example .env
-npm install
-npm run dev
-```
+1. **OAuth & Permissions** → Bot Token Scopes add:
+   - `reactions:read`
+   - `channels:history`
+   - `groups:history`
+   - `chat:write`
+   - `users:read`
+2. **Event Subscriptions** → ON  
+   Request URL: `https://slack-ok-linear-production.up.railway.app/slack/events`  
+   Subscribe to bot events: `reaction_added`
+3. **Reinstall to Workspace**
+4. Invite `@Grambot` into the channel if needed
+5. On a thread message add reaction 🎫 (`:ticket:`)
 
-## Deploy (Railway)
+## Deploy
 
-Same pattern as `fio-bank-mcp-http`: GitHub repo + Dockerfile, healthcheck `/health`.
+Railway service `slack-ok-linear`, healthcheck `/health`.
