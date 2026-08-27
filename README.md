@@ -21,7 +21,7 @@ Slack slash command **`/ok`** → AI (OpenRouter or Anthropic) → Linear issue 
 | `ANTHROPIC_WORKSPACE_ID` | for some keys | `wrkspc_…` from Claude Console → Workspaces |
 | `LLM_PROVIDER` | no | `auto` (default), `openrouter`, `anthropic` |
 | `OPENROUTER_MODEL` | no | default `openai/gpt-5-mini` |
-| `ANTHROPIC_MODEL` | no | default `claude-sonnet-4-20250514` |
+| `ANTHROPIC_MODEL` | no | default `claude-sonnet-4-5` |
 | `SLACK_BOT_TOKEN` | no | reserved for future thread replies |
 | `LINEAR_TEAM_ID` | no | defaults to Gramo IT |
 | `LINEAR_ASSIGNEE_ID` | no | defaults to Ondra |

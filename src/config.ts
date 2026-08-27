@@ -46,7 +46,7 @@ export function loadConfig(): AppConfig {
     openRouterApiKey: process.env.OPENROUTER_API_KEY?.trim() || undefined,
     openRouterModel: process.env.OPENROUTER_MODEL?.trim() || 'openai/gpt-5-mini',
     anthropicApiKey: process.env.ANTHROPIC_API_KEY?.trim() || undefined,
-    anthropicModel: process.env.ANTHROPIC_MODEL?.trim() || 'claude-sonnet-4-20250514',
+    anthropicModel: process.env.ANTHROPIC_MODEL?.trim() || 'claude-sonnet-4-5',
     anthropicWorkspaceId:
       process.env.ANTHROPIC_WORKSPACE_ID?.trim() ||
       process.env.ANTHROPIC_AWS_WORKSPACE_ID?.trim() ||
